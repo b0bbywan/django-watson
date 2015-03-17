@@ -2,16 +2,6 @@
 from __future__ import unicode_literals
 
 from django.db import models, migrations
-from django.core.management import call_command
-
-
-def install_watson(apps, schema_editor):
-    call_command("installwatson", verbosity=0)
-
-
-def uninstall_watson(apps, schema_editor):
-    call_command("uninstallwatson", verbosity=0)
-
 
 class Migration(migrations.Migration):
 
@@ -38,9 +28,5 @@ class Migration(migrations.Migration):
                 'verbose_name_plural': 'search entries',
             },
             bases=(models.Model,),
-        ),
-        migrations.RunPython(
-            install_watson,
-            uninstall_watson,
         ),
     ]

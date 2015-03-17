@@ -172,15 +172,16 @@ class PostgresSearchBackend(SearchBackend):
             in escape_postgres_query_chars(text).split()
         )
     
-def is_installed(self):
+    def is_installed(self):
         """Checks whether django-watson is installed."""
         cursor = connection.cursor()
         schema_name = connection.schema_name
         cursor.execute("""        
             SELECT attname FROM pg_attribute
-            WHERE attrelid = (SELECT oid FROM pg_class WHERE relname = 'watson_searchentry' AND relnamespace = (SELECT oid from pg_namespace WHERE nspname = '""" + schema_name + """') AND attname = 'search_tsv';
+            WHERE attrelid = (SELECT oid FROM pg_class WHERE relname = 'watson_searchentry' AND relnamespace = (SELECT oid from pg_namespace WHERE nspname = '""" + schema_name + """')) AND attname = 'search_tsv';
         """)
         return bool(cursor.fetchall())
+
     
     @transaction.atomic()
     def do_install(self):

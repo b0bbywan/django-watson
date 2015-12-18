@@ -18,39 +18,41 @@ def regex_from_word(word):
     return "(\s{word})|(^{word})".format(
         word = re.escape(word),
     )
-    
-    
-def make_escaper(badchars):
-    """Creates an efficient escape function that strips the given characters from the string."""
-    translation_table = dict((ord(c), None) for c in badchars)
-    translation_table[ord("'")] = "''"
-    def escaper(text):
-        return force_text(text, errors="ignore").translate(translation_table)
-    return escaper
+
+
+RE_SPACE = re.compile(r"[\s]+", re.UNICODE)
+RE_NON_WORD = re.compile(r"[^ \w\-\.']", re.UNICODE)
+
+
+def escape_query(text):
+    text = force_text(text)
+    text = RE_SPACE.sub(" ", text)  # Standardize spacing.
+    text = RE_NON_WORD.sub("", text)  # Remove non-word characters.
+    return text
 
 
 class SearchBackend(six.with_metaclass(abc.ABCMeta)):
 
     """Base class for all search backends."""
-    
+
     def is_installed(self):
         """Checks whether django-watson is installed."""
         return True
-    
+
     def do_install(self):
         """Executes the SQL needed to install django-watson."""
         pass
-        
+
     def do_uninstall(self):
         """Executes the SQL needed to uninstall django-watson."""
         pass
-    
+
     requires_installation = False
-    
+
     supports_ranking = False
-    
+
     supports_prefix_matching = False
-        
+
     def do_search_ranking(self, engine_slug, queryset, search_text):
         """Ranks the given queryset according to the relevance of the given search text."""
         return queryset.extra(
@@ -58,12 +60,12 @@ class SearchBackend(six.with_metaclass(abc.ABCMeta)):
                 "watson_rank": "1",
             },
         )
-        
+
     @abc.abstractmethod
     def do_search(self, engine_slug, queryset, search_text):
         """Filters the given queryset according the the search logic for this backend."""
         raise NotImplementedError
-        
+
     def do_filter_ranking(self, engine_slug, queryset, search_text):
         """Ranks the given queryset according to the relevance of the given search text."""
         return queryset.extra(
@@ -71,7 +73,7 @@ class SearchBackend(six.with_metaclass(abc.ABCMeta)):
                 "watson_rank": "1",
             },
         )
-    
+
     @abc.abstractmethod
     def do_filter(self, engine_slug, queryset, search_text):
         """Filters the given queryset according the the search logic for this backend."""
@@ -79,11 +81,11 @@ class SearchBackend(six.with_metaclass(abc.ABCMeta)):
 
 
 class RegexSearchMixin(six.with_metaclass(abc.ABCMeta)):
-    
+
     """Mixin to adding regex search to a search backend."""
-    
+
     supports_prefix_matching = True
-    
+
     def do_search(self, engine_slug, queryset, search_text):
         """Filters the given queryset according the the search logic for this backend."""
         word_query = Q()
@@ -93,7 +95,7 @@ class RegexSearchMixin(six.with_metaclass(abc.ABCMeta)):
         return queryset.filter(
             word_query
         )
-        
+
     def do_filter(self, engine_slug, queryset, search_text):
         """Filters the given queryset according the the search logic for this backend."""
         model = queryset.model
@@ -137,7 +139,7 @@ class RegexSearchMixin(six.with_metaclass(abc.ABCMeta)):
         for word in search_text.split():
             regex = regex_from_word(word)
             word_query.append("""
-                ({db_table}.{title} {iregex_operator} OR {db_table}.{description} {iregex_operator} OR {db_table}.{content} {iregex_operator}) 
+                ({db_table}.{title} {iregex_operator} OR {db_table}.{description} {iregex_operator} OR {db_table}.{content} {iregex_operator})
             """)
             word_args.extend((regex, regex, regex))
         # Compile the query.
@@ -150,11 +152,8 @@ class RegexSearchMixin(six.with_metaclass(abc.ABCMeta)):
 
 
 class RegexSearchBackend(RegexSearchMixin, SearchBackend):
-    
+
     """A search backend that works with SQLite3."""
-
-
-escape_postgres_query_chars = make_escaper("():|!&*")
 
 
 class PostgresSearchBackend(SearchBackend):
@@ -167,22 +166,28 @@ class PostgresSearchBackend(SearchBackend):
     def escape_postgres_query(self, text):
         """Escapes the given text to become a valid ts_query."""
         return " & ".join(
-            "{0}:*".format(word)
+            "$${0}$$:*".format(word)
             for word
-            in escape_postgres_query_chars(text).split()
+            in escape_query(text).split()
         )
-    
+
     def is_installed(self):
         """Checks whether django-watson is installed."""
         cursor = connection.cursor()
-        schema_name = connection.schema_name
-        cursor.execute("""        
-            SELECT attname FROM pg_attribute
-            WHERE attrelid = (SELECT oid FROM pg_class WHERE relname = 'watson_searchentry' AND relnamespace = (SELECT oid from pg_namespace WHERE nspname = '""" + schema_name + """')) AND attname = 'search_tsv';
-        """)
-        return bool(cursor.fetchall())
+        try:
+            schema_name = connection.schema_name
+            cursor.execute("""        
+                SELECT attname FROM pg_attribute
+                WHERE attrelid = (SELECT oid FROM pg_class WHERE relname = 'watson_searchentry' AND relnamespace = (SELECT oid from pg_namespace WHERE nspname = '""" + schema_name + """')) AND attname = 'search_tsv';
+            """)
+        except NameError:
+            cursor.execute("""
+                SELECT attname FROM pg_attribute
+                WHERE attrelid = (SELECT oid FROM pg_class WHERE relname = 'watson_searchentry') AND attname = 'search_tsv';
+            """)
+        finally:
+            return bool(cursor.fetchall())
 
-    
     @transaction.atomic()
     def do_install(self):
         """Executes the PostgreSQL specific SQL code to install django-watson."""
@@ -233,13 +238,13 @@ class PostgresSearchBackend(SearchBackend):
 
             DROP FUNCTION watson_searchentry_trigger_handler();
         """)
-        
+
     requires_installation = True
-    
+
     supports_ranking = True
-    
+
     supports_prefix_matching = True
-        
+
     def do_search(self, engine_slug, queryset, search_text):
         """Performs the full text search."""
         return queryset.extra(
@@ -248,7 +253,7 @@ class PostgresSearchBackend(SearchBackend):
             ),),
             params = (self.escape_postgres_query(search_text),),
         )
-        
+
     def do_search_ranking(self, engine_slug, queryset, search_text):
         """Performs full text ranking."""
         return queryset.extra(
@@ -260,7 +265,7 @@ class PostgresSearchBackend(SearchBackend):
             select_params = (self.escape_postgres_query(search_text),),
             order_by = ("-watson_rank",),
         )
-        
+
     def do_filter(self, engine_slug, queryset, search_text):
         """Performs the full text filter."""
         model = queryset.model
@@ -286,7 +291,7 @@ class PostgresSearchBackend(SearchBackend):
             ),
             params = (engine_slug, self.escape_postgres_query(search_text), content_type.id),
         )
-        
+
     def do_filter_ranking(self, engine_slug, queryset, search_text):
         """Performs the full text ranking."""
         return queryset.extra(
@@ -298,42 +303,44 @@ class PostgresSearchBackend(SearchBackend):
             select_params = (self.escape_postgres_query(search_text),),
             order_by = ("-watson_rank",),
         )
-        
-        
+
+
 class PostgresLegacySearchBackend(PostgresSearchBackend):
 
     """
     A search backend that uses native PostgreSQL full text indices.
-    
+
     This backend doesn't support prefix matching, and works with PostgreSQL 8.3 and below.
     """
-    
+
     supports_prefix_matching = False
-    
+
     def escape_postgres_query(self, text):
         """Escapes the given text to become a valid ts_query."""
-        return " & ".join(escape_postgres_query_chars(text).split())
+        return " & ".join(
+            "$${0}$$".format(word)
+            for word
+            in escape_query(text).split()
+        )
 
 
 class PostgresPrefixLegacySearchBackend(RegexSearchMixin, PostgresLegacySearchBackend):
-    
+
     """
     A legacy search backend that uses a regexp to perform matches, but still allows
     relevance rankings.
-    
-    Use if your postgres vesion is less than 8.3, and you absolutely can't live without
-    prefix matching. Beware, this backend can get slow with large datasets! 
-    """
-        
 
-escape_mysql_boolean_query_chars = make_escaper("+-<>()*\".!:,;")
+    Use if your postgres vesion is less than 8.3, and you absolutely can't live without
+    prefix matching. Beware, this backend can get slow with large datasets!
+    """
+
 
 def escape_mysql_boolean_query(search_text):
     return " ".join(
         '+{word}*'.format(
             word = word,
         )
-        for word in escape_mysql_boolean_query_chars(search_text).split()
+        for word in escape_query(search_text).split()
     )
 
 
@@ -361,7 +368,7 @@ class MySQLSearchBackend(SearchBackend):
         cursor.execute("CREATE FULLTEXT INDEX watson_searchentry_title ON watson_searchentry (title)")
         cursor.execute("CREATE FULLTEXT INDEX watson_searchentry_description ON watson_searchentry (description)")
         cursor.execute("CREATE FULLTEXT INDEX watson_searchentry_content ON watson_searchentry (content)")
-    
+
     def do_uninstall(self):
         """Executes the SQL needed to uninstall django-watson."""
         cursor = connection.cursor()
@@ -370,23 +377,23 @@ class MySQLSearchBackend(SearchBackend):
         cursor.execute("DROP INDEX watson_searchentry_title ON watson_searchentry")
         cursor.execute("DROP INDEX watson_searchentry_description ON watson_searchentry")
         cursor.execute("DROP INDEX watson_searchentry_content ON watson_searchentry")
-    
+
     supports_prefix_matching = True
-    
+
     requires_installation = True
-    
+
     supports_ranking = True
 
     def _format_query(self, search_text):
         return escape_mysql_boolean_query(search_text)
-    
+
     def do_search(self, engine_slug, queryset, search_text):
         """Performs the full text search."""
         return queryset.extra(
             where = ("MATCH (title, description, content) AGAINST (%s IN BOOLEAN MODE)",),
             params = (self._format_query(search_text),),
         )
-        
+
     def do_search_ranking(self, engine_slug, queryset, search_text):
         """Performs full text ranking."""
         search_text = self._format_query(search_text)
@@ -401,7 +408,7 @@ class MySQLSearchBackend(SearchBackend):
             select_params = (search_text, search_text, search_text,),
             order_by = ("-watson_rank",),
         )
-        
+
     def do_filter(self, engine_slug, queryset, search_text):
         """Performs the full text filter."""
         model = queryset.model
@@ -425,7 +432,7 @@ class MySQLSearchBackend(SearchBackend):
             ),
             params = (engine_slug, self._format_query(search_text), content_type.id),
         )
-        
+
     def do_filter_ranking(self, engine_slug, queryset, search_text):
         """Performs the full text ranking."""
         search_text = self._format_query(search_text)
@@ -444,26 +451,17 @@ class MySQLSearchBackend(SearchBackend):
 
 def get_postgresql_version(connection):
     """Returns the version number of the PostgreSQL connection."""
-    try:
-        from django.db.backends.postgresql.version import get_version  # Django 1.3
-    except ImportError:
-        # Use the Django 1.4 method.
-        from django.db.backends.postgresql_psycopg2.version import get_version
-        return get_version(connection)
-    else:
-        # Use the Django 1.3 method. 
-        cursor = connection.cursor()
-        major, major2, minor = get_version(cursor)
-        return major * 10000 + major2 * 100 + minor
-        
-        
+    from django.db.backends.postgresql_psycopg2.version import get_version
+    return get_version(connection)
+
+
 class AdaptiveSearchBackend(SearchBackend):
 
     """
     A search backend that guesses the correct search backend based on the
     DATABASES["default"] settings.
     """
-    
+
     def __new__(cls):
         """Guess the correct search backend and initialize it."""
         if connection.vendor == "postgresql":

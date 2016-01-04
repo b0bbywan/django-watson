@@ -180,7 +180,7 @@ class PostgresSearchBackend(SearchBackend):
                 SELECT attname FROM pg_attribute
                 WHERE attrelid = (SELECT oid FROM pg_class WHERE relname = 'watson_searchentry' AND relnamespace = (SELECT oid from pg_namespace WHERE nspname = '""" + schema_name + """')) AND attname = 'search_tsv';
             """)
-        except NameError:
+        except AttributeError:
             cursor.execute("""
                 SELECT attname FROM pg_attribute
                 WHERE attrelid = (SELECT oid FROM pg_class WHERE relname = 'watson_searchentry') AND attname = 'search_tsv';
